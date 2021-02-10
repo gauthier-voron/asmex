@@ -1,0 +1,86 @@
+'\" t
+.TH ASMEX 1 "Version 1.0.0"
+.SH NAME
+asmex \- show assembly and source code correspondance
+.SH SYNOPSIS
+.B "asmex \-\-help"
+.br
+.B "asmex \-\-version"
+.br
+.B "asmex [\-I\fIpath\fP...] \fIfile\fP"
+.br
+.SH DESCRIPTION
+Show the assembly code of the binary
+.I file
+compiled with debug information (DWARF) and display from what line of the
+source code each assembly line comes from.
+By default,
+.B asmex
+looks for source files recursively under the
+.B $HOME
+directory.
+The
+.B -I
+option overrides this behavior.
+.PP
+The correspondance between source and assembly code is displayed in a curses
+interface with the following key bindings:
+.TP
+\fBq\fR
+Exit the curses interface.
+.TP
+\fBr\fR
+Force redraw the interface.
+.TP
+\fBo\fR
+Force reload \fIfile\fR (does so automatically when \fIfile\fR changes).
+.TP
+\fB<TAB>\fR
+Switch between source panel and assembly panel.
+.TP
+\fB<UP>\fR
+Move the cursor up on the current panel.
+.TP
+\fB<DOWN>\fR
+Move the cursor down on the current panel.
+.TP
+\fB<PGUP>\fR
+Move the cursor one page up on the current panel.
+.TP
+\fB<PGDOWN>\fR
+Move the cursor one page down on the current panel.
+.TP
+\fB<LEFT>\fR
+Show the previous source file on the source panel.
+.TP
+\fB<RIGHT>\fR
+Show the next source file on the source panel.
+.TP
+\fB<ENTER>\fR
+Show the source (resp. assembly) line corresponding to the selected assembly
+(resp. source) line.
+.TP
+\fB/\fR
+Start a search on the current panel.
+.TP
+\fBn\fR
+Go to the next search result.
+.TP
+\fBN\fR
+Go to the previous search result.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print the usage message and exit.
+.TP
+\fB\-I\fIpath\fR, \fB\-\-include\fR=\fIpath\fR
+If \fIpath\fR is a regular file, add it to the potential source file list.
+If \fIpath\fR is a directory, looks for source files recursively under this
+directory.
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print the version information and exit.
+.SH SEE ALSO
+\fBobjdump\fR(1)
+.SH AUTHORS
+Gauthier Voron

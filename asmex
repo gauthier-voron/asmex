@@ -1,0 +1,1002 @@
+#!/usr/bin/perl -l
+#
+# This file is part of Asmex.
+#
+# Asmex is free software: you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation, either version 3 of the License, or (at your option) any later
+# version.
+#
+# Asmex is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+# details.
+#
+# You should have received a copy of the GNU General Public License along with
+# Asmex. If not, see <https://www.gnu.org/licenses/>.
+#
+
+use strict;
+use warnings;
+
+use Asmex::Object;
+
+use Curses;
+use Curses::UI;
+use Curses::UI::Window;
+use Curses::UI::CodeViewer;
+
+use Getopt::Long qw(GetOptionsFromArray);
+
+use POSIX ':sys_wait_h';
+
+
+my $PROGNAME = 'asmex';
+my $VERSION  = '1.0.0';
+my $AUTHOR   = 'Gauthier Voron';
+my $EMAIL    = 'gauthier.voron@mnesic.fr';
+
+
+# Utility functions ===========================================================
+
+sub fatal
+{
+    my ($msg) = @_;
+
+    printf(STDERR "asmex: %s\n", $msg);
+    printf(STDERR "Please type '%s --help' for more information\n", $0);
+
+    exit (1);
+}
+
+sub is_object
+{
+    my ($path) = @_;
+    my ($fh, $pid, $ret);
+    my @command = ('objdump', '-d', $path);
+
+    if (($pid = fork()) == 0) {
+	open(\*STDOUT, '>', '/dev/null');
+	open(\*STDERR, '>', '/dev/null');
+
+	exec (@command);
+    }
+
+    waitpid($pid, 0);
+    $ret = $?;
+
+    return ($ret == 0);
+}
+
+
+# Data build ==================================================================
+
+sub build_dline
+{
+    my ($compdir, $dlines, $includes) = @_;
+    my ($ret, $dline, $path);
+
+    foreach $dline (@$dlines) {
+	$path = $dline->[DLINE_FILE];
+	$path =~ s|^\./||;
+
+	if (!($path =~ m|^/|)) {
+	    $path = $compdir . '/' . $path;
+	}
+
+	if (!(-f $path)) {
+	    next;
+	}
+
+	if (!grep { $path =~ m|^$_| } @$includes) {
+	    next;
+	}
+
+	$ret = [ $path , $dline->[DLINE_LNUM] ];
+    }
+
+    return $ret;
+}
+
+sub build_asm_code
+{
+    my ($asmobj, $includes) = @_;
+    my ($lines, $section, @entries, $entry, %codes, $line);
+    my ($compdir, $dlines, $dline, $asm);
+
+    $compdir = $asmobj->compdir();
+
+    foreach $section (sort { $a cmp $b } @{$asmobj->sections()}) {
+	if (defined($lines)) {
+	    push(@$lines, { TYPE => '', ADDR => '', TEXT => '',
+			    DLINE => undef });
+	}
+
+	push(@$lines, { TYPE => 'section', ADDR => '', TEXT => $section,
+			DLINE => undef });
+
+	@entries = @{$asmobj->entries($section)};
+
+	foreach $entry (@entries) {
+	    $codes{$entry} = $asmobj->code($section, $entry);
+	}
+
+	@entries = sort { $codes{$a}->[0]->[CODE_ADDR] <=>
+			  $codes{$b}->[0]->[CODE_ADDR] } @entries;
+
+	foreach $entry (@entries) {
+	    push(@$lines, { TYPE => '', ADDR => '', TEXT => '',
+			    DLINE => undef });
+	    push(@$lines, { TYPE => 'entry', ADDR => '', TEXT => $entry . ':',
+			    DLINE => undef });
+
+	    $dline = undef;
+
+	    foreach $line (@{$codes{$entry}}) {
+		$asm = $line->[CODE_ASM];
+		if (!defined($asm)) {
+		    next;
+		}
+
+		$dlines = $asmobj->lines($section, $line->[CODE_ADDR]);
+
+		if (defined($dlines)) {
+		    $dline = build_dline($compdir, $dlines, $includes);
+		}
+
+		push(@$lines, { TYPE => 'instr', ADDR => $line->[CODE_ADDR],
+				TEXT => "\t" . $asm, DLINE => $dline });
+
+		if ($asm =~ m/^(j|ret|call)/) {
+		    $dline = undef;
+		}
+	    }
+	}
+    }
+
+    return $lines;
+}
+
+sub build_source_code
+{
+    my ($path) = @_;
+    my ($lines, $fh, $line);
+
+    if (!open($fh, '<', $path)) {
+	return [];
+    }
+
+    while (defined($line = <$fh>)) {
+	chomp($line);
+	push(@$lines, $line);
+    }
+
+    close($fh);
+
+    return $lines;
+}
+
+sub build_source_codes
+{
+    my ($asm_code) = @_;
+    my ($codes, $index, $line, $dline, $path, $lnum);
+    my ($matches, $lines, $indices);
+
+    $index = 0;
+
+    foreach $line (@$asm_code) {
+	$dline = $line->{DLINE};
+
+	if (!defined($dline)) {
+	    $index += 1;
+	    next;
+	}
+
+	($path, $lnum) = @$dline;
+
+	push(@{$codes->{$path}->{$lnum}}, $index);
+
+	$index += 1;
+    }
+
+    foreach $path (keys(%$codes)) {
+	$matches = $codes->{$path};
+	$lines = build_source_code($path);
+
+	$codes->{$path} = [];
+
+	$lnum = 1;
+
+	foreach $line (@$lines) {
+	    $indices = $matches->{$lnum};
+
+	    if (defined($indices)) {
+		push(@{$codes->{$path}}, [ $line, $indices ]);
+	    } else {
+		push(@{$codes->{$path}}, [ $line, [] ]);
+	    }
+
+	    $lnum += 1;
+	}
+    }
+
+    return $codes;
+}
+
+sub build_color_table
+{
+    my ($asm_code) = @_;
+    my ($table, $line, $dline, $key, $path, $lnum, $color, $nextcolor);
+
+    $nextcolor = 0;
+
+    foreach $line (@$asm_code) {
+	$dline = $line->{DLINE};
+
+	if (!defined($dline)) {
+	    next;
+	}
+
+	($path, $lnum) = @$dline;
+	$key = $path . ':' . $lnum;
+
+	$color = $table->{$key};
+
+	if (!defined($color)) {
+	    $table->{$key} = $nextcolor;
+	    $nextcolor += 1;
+	}
+    }
+
+    return $table;
+}
+
+sub build_data
+{
+    my ($object, $includes) = @_;
+    my ($asmobj, $asm_code, $source_codes, $color_table);
+
+    $asmobj = Asmex::Object->new($object);
+
+    $asm_code = build_asm_code($asmobj, $includes);
+    $source_codes = build_source_codes($asm_code);
+    $color_table = build_color_table($asm_code);
+
+    return {
+	ASM_CODE     => $asm_code,
+	SOURCE_CODES => $source_codes,
+	COLOR_TABLE  => $color_table
+    };
+}
+
+
+# UI build and initialization =================================================
+
+
+my @COLORS = qw(red blue green yellow magenta cyan);
+
+
+sub build_ui
+{
+    my ($cui, $win, $source_label, $source_view, $asm_view);
+
+    $cui = new Curses::UI(-color_support => 1, -clear_on_exit => 1,
+			  -mouse_support => 0);
+    $win = $cui->add('win', 'Window');
+    $source_label = $win->add('source_label', 'Label', -text => '',
+			      -x => 1, -y => 0);
+    $source_view = $win->add('source_view', "CodeViewer", -border => 1,
+			     -y => 1);
+    $asm_view = $win->add('asm_view', "CodeViewer", -border => 1, -y => 1);
+
+    return {
+	CUI          => $cui,
+	WINDOW       => $win,
+	SOURCE_LABEL => $source_label,
+	SOURCE_VIEW  => $source_view,
+	ASM_VIEW     => $asm_view
+    };
+}
+
+sub init_ui
+{
+    my ($ctrl) = @_;
+    my ($asm_view, $source_view);
+
+    $asm_view = $ctrl->{UI}->{ASM_VIEW};
+    $asm_view->onkey(sub { handle_event($ctrl, @_); });
+    $asm_view->oncursor(sub { handle_cursor($ctrl, @_); });
+    $asm_view->lines([]);
+
+    $source_view = $ctrl->{UI}->{SOURCE_VIEW};
+    $source_view->onkey(sub { handle_event($ctrl, @_); });
+    $source_view->oncursor(sub { handle_cursor($ctrl, @_); });
+    $source_view->lines([]);
+
+    return $ctrl;
+}
+
+sub build_asm_lines
+{
+    my ($data) = @_;
+    my ($asm_code, $color_table);
+    my ($asm_lines, $line, $addr, $dline, $path, $lnum, $key, $color, $attrs);
+
+    $asm_code = $data->{ASM_CODE};
+    $color_table = $data->{COLOR_TABLE};
+    
+    foreach $line (@$asm_code) {
+	$addr = $line->{ADDR};
+
+	if ($addr ne '') {
+	    $addr = sprintf("%x", $addr);
+	}
+
+	$dline = $line->{DLINE};
+
+	if (defined($dline)) {
+	    ($path, $lnum) = @$dline;
+	    $key = $path . ':' . $lnum;
+	    $color = $color_table->{$key};
+	    $color = $COLORS[$color % scalar(@COLORS)];
+	    $attrs = [ $color, undef, 0 ];
+	} else {
+	    $attrs = [ undef, undef, 0 ];
+	}
+
+	push(@$asm_lines, [ $addr , $line->{TEXT}, $attrs ]);
+    }
+
+    return $asm_lines;
+}
+
+sub build_source_lines
+{
+    my ($data) = @_;
+    my ($source_codes, $color_table);
+    my ($source_lines, $path, $lines, $lnum, $line, $attrs, $key, $color);
+
+    $source_codes = $data->{SOURCE_CODES};
+    $color_table = $data->{COLOR_TABLE};
+
+    foreach $path (keys(%$source_codes)) {
+	$lines = [];
+
+	$lnum = 1;
+
+	foreach $line (@{$source_codes->{$path}}) {
+	    $key = $path . ':' . $lnum;
+
+	    $color = $color_table->{$key};
+
+	    if (defined($color)) {
+		$color = $COLORS[$color % scalar(@COLORS)];
+		$attrs = [ $color , undef , 0 ];
+	    } else {
+		$attrs = [ undef , undef , 0 ];
+	    }
+
+	    push(@$lines, [ undef, $line->[0], $attrs ]);
+
+	    $lnum += 1;
+	}
+
+	$source_lines->{$path} = $lines;
+    }
+
+    return $source_lines;
+}
+
+sub build_source_stack
+{
+    my ($source_lines) = @_;
+    my ($source_stack);
+
+    $source_stack = [ sort { $a cmp $b } keys(%$source_lines) ];
+
+    return $source_stack;
+}
+
+sub update_source_stack
+{
+    my ($source_lines, $old_stack) = @_;
+    my ($new_stack, $path, %done);
+
+    foreach $path (@$old_stack) {
+	if (defined($source_lines)) {
+	    push(@$new_stack, $path);
+	    $done{$path} = 1;
+	}
+    }
+
+    foreach $path (keys(%$source_lines)) {
+	if (defined($done{$path})) {
+	    next;
+	}
+	push(@$new_stack, $path);
+    }
+
+    return $new_stack;
+}
+
+sub load
+{
+    my ($ctrl, $object, $includes) = @_;
+    my ($source_view, $asm_view);
+    my ($data, $source_label, $source_lines, $source_stack, $asm_lines);
+
+    $source_view = $ctrl->{UI}->{SOURCE_VIEW};
+    $asm_view = $ctrl->{UI}->{ASM_VIEW};
+
+    $data = build_data($object, $includes);
+    $source_lines = build_source_lines($data);
+    $source_stack = build_source_stack($source_lines);
+    $asm_lines = build_asm_lines($data);
+
+    $ctrl->{OBJECT} = $object;
+    $ctrl->{OMTIME} = (stat($object))[9];
+    $ctrl->{INCLUDES} = $includes;
+    $ctrl->{DATA} = $data;
+    $ctrl->{UI}->{SOURCE_LINES} = $source_lines;
+    $ctrl->{UI}->{SOURCE_STACK} = $source_stack;
+    $ctrl->{UI}->{ASM_LINES} = $asm_lines;
+
+    $source_view->lines($source_lines->{$source_stack->[0]});
+    $asm_view->lines($asm_lines);
+
+    return $ctrl;
+}
+
+sub has_object_changed
+{
+    my ($ctrl) = @_;
+    my ($object, $omtime, $mtime);
+
+    $object = $ctrl->{OBJECT};
+    $omtime = $ctrl->{OMTIME};
+
+    $mtime = (stat($object))[9];
+
+    return ($mtime != $omtime);
+}
+
+sub reload
+{
+    my ($ctrl) = @_;
+    my ($object, $includes, $source_view, $asm_view);
+    my ($data, $source_label, $source_lines, $source_stack, $asm_lines);
+    my ($source_path, $source_index, $asm_index);
+
+    $object = $ctrl->{OBJECT};
+    $includes = $ctrl->{INCLUDES};
+    $source_view = $ctrl->{UI}->{SOURCE_VIEW};
+    $asm_view = $ctrl->{UI}->{ASM_VIEW};
+    $source_stack = $ctrl->{UI}->{SOURCE_STACK};
+
+    $source_path = $source_stack->[0];
+    $source_index = $source_view->cursor();
+    $asm_index = $asm_view->cursor();
+
+    $data = build_data($object, $includes);
+    $source_lines = build_source_lines($data);
+    $source_stack = update_source_stack($source_lines, $source_stack);
+    $asm_lines = build_asm_lines($data);
+
+    if ($source_path ne $source_stack->[0]) {
+	$source_path = $source_stack->[0];
+	$source_index = 0;
+    }
+
+    if ($source_index >= scalar(@{$source_lines->{$source_path}})) {
+	$source_index = scalar(@{$source_lines->{$source_path}}) - 1;
+    }
+
+    if ($asm_index >= scalar(@$asm_lines)) {
+	$asm_index = scalar(@$asm_lines) - 1;
+    }
+
+    $ctrl->{OMTIME} = (stat($object))[9];
+    $ctrl->{DATA} = $data;
+    $ctrl->{UI}->{SOURCE_LINES} = $source_lines;
+    $ctrl->{UI}->{SOURCE_STACK} = $source_stack;
+    $ctrl->{UI}->{ASM_LINES} = $asm_lines;
+
+    $source_view->lines($source_lines->{$source_path});
+    $source_view->cursor($source_index);
+    $asm_view->lines($asm_lines);
+    $asm_view->cursor($asm_index);
+
+    return $ctrl;
+}
+
+
+# UI event handling ===========================================================
+
+sub auto_reload
+{
+    my ($ctrl) = @_;
+
+    if (has_object_changed($ctrl)) {
+	reload($ctrl);
+	redraw($ctrl);
+    }
+}
+
+sub change_source
+{
+    my ($ctrl, $change) = @_;
+    my ($source_label, $source_view, $source_stack, $source_lines);
+
+    $source_label = $ctrl->{UI}->{SOURCE_LABEL};
+    $source_view = $ctrl->{UI}->{SOURCE_VIEW};
+    $source_stack = $ctrl->{UI}->{SOURCE_STACK};
+    $source_lines = $ctrl->{UI}->{SOURCE_LINES};
+
+    $change->($source_stack);
+
+    set_source_label($ctrl);
+
+    $source_view->lines($source_lines->{$source_stack->[0]});
+    $source_view->intellidraw();
+}
+
+sub previous_source
+{
+    my ($ctrl) = @_;
+
+    change_source($ctrl, sub {
+	my ($stack) = @_;
+	my $path = pop(@$stack);
+	unshift(@$stack, $path);
+    });
+}
+
+sub next_source
+{
+    my ($ctrl) = @_;
+
+    change_source($ctrl, sub {
+	my ($stack) = @_;
+	my $path = shift(@$stack);
+	push(@$stack, $path);
+    });
+}
+
+sub find_source
+{
+    my ($ctrl, $path) = @_;
+
+    change_source($ctrl, sub {
+	my ($stack) = @_;
+	my ($elem, $index);
+
+	$index = 0;
+
+	while (($index < scalar(@$stack)) && ($stack->[$index] ne $path)) {
+	    $index++;
+	}
+
+	if ($index < scalar(@$stack)) {
+	    splice(@$stack, $index, 1);
+	    unshift(@$stack, $path);
+	}
+    });
+}
+
+sub find_next_asm_match
+{
+    my ($ctrl) = @_;
+    my ($source_codes, $source_stack, $source_view, $asm_view);
+    my ($index, $line, $dline, $path, @indices, $aindex);
+
+    $source_codes = $ctrl->{DATA}->{SOURCE_CODES};
+    $source_stack = $ctrl->{UI}->{SOURCE_STACK};
+    $source_view = $ctrl->{UI}->{SOURCE_VIEW};
+    $asm_view = $ctrl->{UI}->{ASM_VIEW};
+
+    $path = $source_stack->[0];
+    $index = $source_view->cursor();
+    @indices = sort { $a <=> $b } @{$source_codes->{$path}->[$index]->[1]};
+
+    if (scalar(@indices) == 0) {
+	return;
+    }
+
+    $aindex = $asm_view->cursor();
+
+    if ($aindex >= $indices[-1]) {
+	$asm_view->cursor($indices[0]);
+	return;
+    }
+
+    foreach $index (@indices) {
+	if ($index > $aindex) {
+	    $asm_view->cursor($index);
+	    return;
+	}
+    }
+}
+
+sub find_source_match
+{
+    my ($ctrl) = @_;
+    my ($asm_code, $asm_view, $source_view);
+    my ($index, $line, $dline, $path, $lnum);
+
+    $asm_code = $ctrl->{DATA}->{ASM_CODE};
+    $asm_view = $ctrl->{UI}->{ASM_VIEW};
+    $source_view = $ctrl->{UI}->{SOURCE_VIEW};
+
+    $index = $asm_view->cursor();
+    $line = $asm_code->[$index];
+
+    if (defined($line)) {
+	$dline = $line->{DLINE};
+    }
+
+    if (!defined($dline)) {
+	return;
+    }
+
+    ($path, $lnum) = @$dline;
+
+    find_source($ctrl, $path);
+
+    $source_view->cursor($lnum - 1);
+}
+
+sub set_source_label
+{
+    my ($ctrl) = @_;
+    my ($source_label, $source_stack);
+    my ($width, $text);
+
+    $source_label = $ctrl->{UI}->{SOURCE_LABEL};
+    $source_stack = $ctrl->{UI}->{SOURCE_STACK};
+
+    $width = $source_label->{-width};
+    $text = $source_stack->[0];
+
+    if (length($text) > $width) {
+	$text = '...' . substr($text, length($text) - $width + 4, $width);
+    }
+
+    $source_label->text($text);
+}
+
+sub redraw
+{
+    my ($ctrl) = @_;
+    my ($window, $asm_view, $source_view, $source_label, $cui);
+    my ($width, $height, $source_width);
+
+    $window = $ctrl->{UI}->{WINDOW};
+    $asm_view = $ctrl->{UI}->{ASM_VIEW};
+    $source_view = $ctrl->{UI}->{SOURCE_VIEW};
+    $source_label = $ctrl->{UI}->{SOURCE_LABEL};
+    $cui = $ctrl->{UI}->{CUI};
+
+    $width = $window->width();
+    $height = $window->height();
+    $source_width = $width / 2;
+
+    $source_label->{-width} = $width - 2;
+    $source_view->{-width} = $source_width;
+    $source_view->{-height} = $height - 1;
+    $asm_view->{-x} = $source_width;
+    $asm_view->{-width} = $width - $source_width;
+    $asm_view->{-height} = $height - 1;
+
+    set_source_label($ctrl);
+
+    $cui->layout();
+    $cui->intellidraw();
+}
+
+sub set_highlight
+{
+    my ($ctrl, $change) = @_;
+    my ($source_codes, $highlight);
+    my ($source_lines, $source_view, $asm_lines, $asm_view);
+    my ($path, $lnum, $line, $attrs, $sline, $index);
+
+    $source_codes = $ctrl->{DATA}->{SOURCE_CODES};
+    $highlight = $ctrl->{UI}->{HIGHLIGHT};
+    $source_lines = $ctrl->{UI}->{SOURCE_LINES};
+    $source_view = $ctrl->{UI}->{SOURCE_VIEW};
+    $asm_lines = $ctrl->{UI}->{ASM_LINES};
+    $asm_view = $ctrl->{UI}->{ASM_VIEW};
+
+    ($path, $lnum) = split(':', $highlight);
+
+    $line = $source_lines->{$path}->[$lnum - 1];
+    $attrs = $line->[2];
+    $change->($attrs);
+
+    foreach $index (@{$source_codes->{$path}->[$lnum - 1]->[1]}) {
+	$line = $asm_lines->[$index];
+	$attrs = $line->[2];
+	$change->($attrs);
+    }
+
+    $asm_view->intellidraw();
+    $source_view->intellidraw();
+}
+
+sub highlight_from_asm
+{
+    my ($ctrl) = @_;
+    my ($asm_code, $asm_view, $highlight);
+    my ($index, $line, $dline, $path, $lnum, $key);
+
+    $asm_code = $ctrl->{DATA}->{ASM_CODE};
+    $asm_view = $ctrl->{UI}->{ASM_VIEW};
+    $highlight = $ctrl->{UI}->{HIGHLIGHT};
+
+    $index = $asm_view->cursor();
+    $line = $asm_code->[$index];
+
+    if (defined($line)) {
+	$dline = $line->{DLINE};
+
+	if (defined($dline)) {
+	    ($path, $lnum) = @$dline;
+	    $key = $path . ':' . $lnum;
+	}
+    }
+
+    if (defined($highlight) && (!defined($key) || ($key ne $highlight))){
+	set_highlight($ctrl, sub {
+	    my ($attrs) = @_;
+	    $attrs->[2] = 0;
+	});
+    }
+
+    $ctrl->{UI}->{HIGHLIGHT} = $key;
+
+    if (defined($key)) {
+	set_highlight($ctrl, sub {
+	    my ($attrs) = @_;
+	    $attrs->[2] = 1;
+	});
+    }
+}
+
+sub highlight_from_source
+{
+    my ($ctrl) = @_;
+    my ($source_codes, $source_stack, $source_view, $highlight);
+    my ($index, $path, $line, $key);
+
+    $source_codes = $ctrl->{DATA}->{SOURCE_CODES};
+    $source_stack = $ctrl->{UI}->{SOURCE_STACK};
+    $source_view = $ctrl->{UI}->{SOURCE_VIEW};
+    $highlight = $ctrl->{UI}->{HIGHLIGHT};
+
+    $index = $source_view->cursor();
+    $path = $source_stack->[0];
+
+    if (scalar(@{$source_codes->{$path}->[$index]->[1]}) > 0) {
+	$key = $path . ':' . ($index + 1);
+    }
+
+    if (defined($highlight) && (!defined($key) || ($key ne $highlight))){
+	set_highlight($ctrl, sub {
+	    my ($attrs) = @_;
+	    $attrs->[2] = 0;
+	});
+    }
+
+    $ctrl->{UI}->{HIGHLIGHT} = $key;
+
+    if (defined($key)) {
+	set_highlight($ctrl, sub {
+	    my ($attrs) = @_;
+	    $attrs->[2] = 1;
+	});
+    }
+}
+
+sub handle_source_event
+{
+    my ($ctrl, $key) = @_;
+
+    if ($key eq KEY_ENTER) {
+	find_next_asm_match($ctrl);
+    }
+
+}
+
+sub handle_asm_event
+{
+    my ($ctrl, $key) = @_;
+
+    if ($key eq KEY_ENTER) {
+	find_source_match($ctrl);
+    }
+}
+
+sub handle_event
+{
+    my ($ctrl, $view, $key) = @_;
+
+    if ($key eq 'q') {
+	exit (0);
+    } elsif ($key eq 'r') {
+	redraw($ctrl);
+    } elsif ($key eq 'o') {
+	reload($ctrl);
+	redraw($ctrl);
+    } elsif ($key eq KEY_LEFT) {
+	previous_source($ctrl);
+    } elsif ($key eq KEY_RIGHT) {
+	next_source($ctrl);
+    }
+
+    if ($view == $ctrl->{UI}->{SOURCE_VIEW}) {
+	handle_source_event($ctrl, $key);
+    }
+
+    if ($view == $ctrl->{UI}->{ASM_VIEW}) {
+	handle_asm_event($ctrl, $key);
+    }
+}
+
+sub handle_cursor
+{
+    my ($ctrl, $view) = @_;
+
+    if ($view == $ctrl->{UI}->{SOURCE_VIEW}) {
+	highlight_from_source($ctrl);
+    }
+
+    if ($view == $ctrl->{UI}->{ASM_VIEW}) {
+	highlight_from_asm($ctrl);
+    }
+}
+
+
+# Main part ===================================================================
+
+sub usage
+{
+    return <<'EOF';
+Usage: asmex [<options...>] FILE
+
+Show the correspondance between assembly code and the source code it has been
+generated from.
+
+Given an object (compiled) file with debug information enabled (the '-g'
+option), show the decompiled file as assembly code and display the origin of
+each assembly lines in the source files.
+
+Options:
+
+  -h, --help                  Show this message and exit.
+
+  -I, --include <path>        Find source code files at the given <path>. The
+                              path can be either a regular file or a directory.
+                              In the latter case, look recursively in sub
+                              directories. This option can be specified many
+                              times.
+
+  -V, --version               Show program version and exit.
+
+Key Bindings:
+
+    q                         Quit asmex.
+    r                         Refresh window.
+    o                         Reload object file.
+
+    <TAB>                     Switch between source and assembly panel.
+    <UP>                      Move the cursor one line up.
+    <DOWN>                    Move the cursor one line down.
+    <PGUP>                    Move the cursor one page up.
+    <PGDOWN>                  Move the cursor one page down.
+
+    <LEFT>                    Show previous source file.
+    <RIGHT>                   Show next source file.
+
+    <ENTER>                   Move to corresponding source/assembly line.
+
+    /                         Search a regex in current panel.
+    n                         Go to next search match.
+    N                         go to previous search match.
+
+EOF
+}
+
+sub version
+{
+    return sprintf("%s %s\n%s\n%s\n", $PROGNAME, $VERSION, $AUTHOR, $EMAIL);
+}
+
+sub build_ctrl
+{
+    my ($ctrl, $ui);
+
+    $ctrl = {};
+    $ctrl->{UI} = build_ui();
+
+    init_ui($ctrl);
+    redraw($ctrl);
+
+    return $ctrl;
+}
+
+sub run_ctrl
+{
+    my ($ctrl) = @_;
+    my ($cui);
+
+    redraw($ctrl);
+
+    $SIG{ALRM} = sub {
+	auto_reload($ctrl);
+	alarm(1);
+    };
+
+    alarm(1);
+
+    $cui = $ctrl->{UI}->{CUI};
+    $cui->mainloop();
+}
+
+sub main
+{
+    my ($object, @err);
+    my (@includes, $path);
+    my ($warn, $ctrl);
+
+    Getopt::Long::Configure('bundling', 'no_ignore_case');
+
+    $warn = $SIG{__WARN__};
+    $SIG{__WARN__} = sub {
+	my ($message) = @_;
+
+	if ($message =~ m|Unknown option: (.*)$|) {
+	    $message = $1;
+	    fatal("unknown option: '" . $message . "'");
+	}
+
+	fatal('unknown option parsing error');
+    };
+    GetOptionsFromArray(
+	\@_,
+	'h|help'      => sub { printf("%s", usage()); exit (0); },
+	'I|include=s' => \@includes,
+	'V|version'   => sub { printf("%s", version()); exit (0); }
+	);
+    $SIG{__WARN__} = $warn;
+
+    ($object, @err) = @_;
+
+    if (!defined($object)) {
+	fatal('missing FILE operand');
+    } elsif (!is_object($object)) {
+	fatal("invalid FILE operand: '" . $object . "'");
+    }
+
+    if (@err) {
+	fatal("unexpected operand: '" . shift(@err) . "'");
+    }
+
+    if (scalar(@includes) == 0) {
+	@includes = ( $ENV{HOME} );
+    } else {
+	foreach $path (@includes) {
+	    $path =~ s|^~|$ENV{HOME}|;
+	}
+    }
+
+    $ctrl = build_ctrl();
+
+    load($ctrl, $object, \@includes);
+
+    run_ctrl($ctrl);
+
+    return 0;
+}
+
+exit (main(@ARGV));
+__END__
