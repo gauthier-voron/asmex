@@ -36,6 +36,8 @@ my $VERSION  = '1.0.0';
 my $AUTHOR   = 'Gauthier Voron';
 my $EMAIL    = 'gauthier.voron@mnesic.fr';
 
+my $DEBUG    = undef;
+
 
 # Utility functions ===========================================================
 
@@ -47,6 +49,17 @@ sub fatal
     printf(STDERR "Please type '%s --help' for more information\n", $0);
 
     exit (1);
+}
+
+sub debug
+{
+    my ($msg) = @_;
+
+    if (!defined($DEBUG)) {
+	return;
+    }
+
+    printf($DEBUG "%s\n", $msg);
 }
 
 sub is_object
@@ -945,7 +958,7 @@ sub run_ctrl
 sub main
 {
     my ($object, @err);
-    my (@includes, $path);
+    my ($debug, @includes, $path);
     my ($warn, $ctrl);
 
     Getopt::Long::Configure('bundling', 'no_ignore_case');
@@ -963,6 +976,7 @@ sub main
     };
     GetOptionsFromArray(
 	\@_,
+	'd|debug=s'   => \$debug,
 	'h|help'      => sub { printf("%s", usage()); exit (0); },
 	'I|include=s' => \@includes,
 	'V|version'   => sub { printf("%s", version()); exit (0); }
@@ -986,6 +1000,12 @@ sub main
     } else {
 	foreach $path (@includes) {
 	    $path =~ s|^~|$ENV{HOME}|;
+	}
+    }
+
+    if (defined($debug)) {
+	if (!open($DEBUG, '>', $debug)) {
+	    fatal("cannot open debug file '$debug': $!");
 	}
     }
 
