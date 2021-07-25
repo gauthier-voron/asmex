@@ -32,9 +32,11 @@ use POSIX ':sys_wait_h';
 
 
 my $PROGNAME = 'asmex';
-my $VERSION  = '1.0.0';
+my $VERSION  = '1.1.0';
 my $AUTHOR   = 'Gauthier Voron';
 my $EMAIL    = 'gauthier.voron@mnesic.fr';
+
+my $DEBUG    = undef;
 
 
 # Utility functions ===========================================================
@@ -47,6 +49,17 @@ sub fatal
     printf(STDERR "Please type '%s --help' for more information\n", $0);
 
     exit (1);
+}
+
+sub debug
+{
+    my ($msg) = @_;
+
+    if (!defined($DEBUG)) {
+	return;
+    }
+
+    printf($DEBUG "%s\n", $msg);
 }
 
 sub is_object
@@ -106,7 +119,11 @@ sub build_asm_code
 
     $compdir = $asmobj->compdir();
 
+    debug("Found compilation directory '$compdir'");
+
     foreach $section (sort { $a cmp $b } @{$asmobj->sections()}) {
+	debug("Found compiled section '$section'");
+
 	if (defined($lines)) {
 	    push(@$lines, { TYPE => '', ADDR => '', TEXT => '',
 			    DLINE => undef });
@@ -125,6 +142,8 @@ sub build_asm_code
 			  $codes{$b}->[0]->[CODE_ADDR] } @entries;
 
 	foreach $entry (@entries) {
+	    debug("  found compiled entry '$entry'");
+
 	    push(@$lines, { TYPE => '', ADDR => '', TEXT => '',
 			    DLINE => undef });
 	    push(@$lines, { TYPE => 'entry', ADDR => '', TEXT => $entry . ':',
@@ -142,6 +161,14 @@ sub build_asm_code
 
 		if (defined($dlines)) {
 		    $dline = build_dline($compdir, $dlines, $includes);
+		    if (defined($dline)) {
+			debug(sprintf("    %-30s -> %s", $asm,
+				      join(':', @$dline)));
+		    } else {
+			debug(sprintf("    %-30s -> unknown location", $asm));
+		    }
+		} else {
+		    debug(sprintf("    %-30s -> (nil)", $asm));
 		}
 
 		push(@$lines, { TYPE => 'instr', ADDR => $line->[CODE_ADDR],
@@ -254,9 +281,17 @@ sub build_color_table
 sub build_data
 {
     my ($object, $includes) = @_;
-    my ($asmobj, $asm_code, $source_codes, $color_table);
+    my ($asmobj, $include, $asm_code, $source_codes, $color_table);
 
-    $asmobj = Asmex::Object->new($object);
+    debug("Build data for '$object'");
+
+    $asmobj = Asmex::Object->new($object, DEBUG => $DEBUG);
+
+    debug("Reconstruct ASM code from ". scalar(@$includes) ." include roots");
+
+    foreach $include (@$includes) {
+	debug("  use include root '$include'");
+    }
 
     $asm_code = build_asm_code($asmobj, $includes);
     $source_codes = build_source_codes($asm_code);
@@ -872,6 +907,8 @@ each assembly lines in the source files.
 
 Options:
 
+  -d, --debug <path>          Write debug information in <path>.
+
   -h, --help                  Show this message and exit.
 
   -I, --include <path>        Find source code files at the given <path>. The
@@ -945,7 +982,7 @@ sub run_ctrl
 sub main
 {
     my ($object, @err);
-    my (@includes, $path);
+    my ($debug, @includes, $path);
     my ($warn, $ctrl);
 
     Getopt::Long::Configure('bundling', 'no_ignore_case');
@@ -963,6 +1000,7 @@ sub main
     };
     GetOptionsFromArray(
 	\@_,
+	'd|debug=s'   => \$debug,
 	'h|help'      => sub { printf("%s", usage()); exit (0); },
 	'I|include=s' => \@includes,
 	'V|version'   => sub { printf("%s", version()); exit (0); }
@@ -986,6 +1024,12 @@ sub main
     } else {
 	foreach $path (@includes) {
 	    $path =~ s|^~|$ENV{HOME}|;
+	}
+    }
+
+    if (defined($debug)) {
+	if (!open($DEBUG, '>', $debug)) {
+	    fatal("cannot open debug file '$debug': $!");
 	}
     }
 

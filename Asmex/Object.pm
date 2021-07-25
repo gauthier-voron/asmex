@@ -49,11 +49,62 @@ our @EXPORT = (
 
 sub new
 {
-    my ($class, $path) = @_;
+    my ($class, $path, %opts) = @_;
     my $self = bless({}, $class);
+    my $value;
+
+    if (defined($value = $opts{DEBUG})) {
+	if (ref($value) eq 'GLOB') {
+	    $self->{_debug} = $value;
+	} else {
+	    return undef;
+	}
+	$self->{_debug_indent} = 0;
+    }
 
     return $self->_parse($path)
 }
+
+
+sub _debug
+{
+    my ($self, $msg) = @_;
+    my ($fh, $indent);
+
+    $fh = $self->{_debug};
+    $indent = $self->{_debug_indent};
+
+    if (!defined($fh)) {
+	return;
+    }
+
+    printf($fh "[%s] %s%s\n", __PACKAGE__, '  ' x $indent, $msg);
+}
+
+sub _debug_enter
+{
+    my ($self) = @_;
+    my ($indent);
+
+    $indent = $self->{_debug_indent};
+
+    if (defined($indent)) {
+	$self->{_debug_indent} += 1;
+    }
+}
+
+sub _debug_exit
+{
+    my ($self) = @_;
+    my ($indent);
+
+    $indent = $self->{_debug_indent};
+
+    if (defined($indent)) {
+	$self->{_debug_indent} -= 1;
+    }
+}
+
 
 # Parse the file with the given $path (assumed to include DWARF information)
 # and extract the debug data.
@@ -62,6 +113,9 @@ sub _parse
 {
     my ($self, $path) = @_;
     my $ret;
+
+    $self->_debug("Parse '$path'");
+    $self->_debug_enter();
 
     $ret = $self->_parse_code($path);
     if (!defined($ret)) {
@@ -90,6 +144,7 @@ sub _parse
 
     $self->_match_sections();
 
+    $self->_debug_exit();
     return $self;
 }
 
@@ -119,7 +174,11 @@ sub _parse_code
     my (@sections, $code);
     my @command = ('objdump', '-dCr', $path);
 
+    $self->_debug("Parse code: " . join(' ', map { "'$_'" } @command));
+    $self->_debug_enter();
+
     if (!open($fh, '-|', @command)) {
+	$self->_debug_exit();
 	return undef;
     }
 
@@ -129,7 +188,12 @@ sub _parse_code
 	if ($line =~ m|^\s*([0-9a-f]+):\s+([0-9a-f]{2}(?: [0-9a-f]{2})*)(?:\s+(.*\S))?\s*$|) {
 	    ($addr, $bin, $asm) = ($1, $2, $3);
 	    $addr = hex('0x' . $addr);
+
+	    $self->_debug(sprintf("Code [%s] [%s] += %8x: %-16s %s",
+			  $section, $entry, $addr, $bin, $asm));
+
 	    push(@{$code->{$section}->{$entry}}, [ $addr, $bin, $asm ]);
+
 	    next;
 	}
 
@@ -161,6 +225,7 @@ sub _parse_code
 	    next;
 	}
 
+	$self->_debug("Unknown line : '$line'");
 	printf(STDERR "Unknown line: %s\n", $line);
     }
 
@@ -169,6 +234,7 @@ sub _parse_code
     $self->{_sections} = \@sections;
     $self->{_code} = $code;
 
+    $self->_debug_exit();
     return $self;
 }
 
@@ -414,11 +480,17 @@ sub _parse_lines
     my ($table, $sequence, $addr, $dfile, $ln, $column, $stmt, $discr);
     my @command = ('objdump', '--dwarf=rawline', $path);
 
+    $self->_debug("Parse lines: " . join(' ', map { "'$_'" } @command));
+    $self->_debug_enter();
+
     if (!open($fh, '-|', @command)) {
+	$self->_debug_exit();
 	return undef;
     }
 
     $discr = 0;
+
+    $self->_debug("Start new sequence");
 
     while (defined($line = <$fh>)) {
 	chomp($line);
@@ -444,13 +516,24 @@ sub _parse_lines
 	    if ($inst =~ m|^Special opcode \d+: advance Address by \d+ to 0x([0-9a-f]+) and Line by -?\d+ to (\d+)(?: \(view \d+\))?$|) {
 		($addr, $ln) = ($1, $2);
 		$addr = hex('0x' . $addr);
-		push(@{$sequence->{$addr}}, [$dfile, $ln, $column, $stmt, $discr]);
+
+		$self->_debug("Sequence [$addr] += ( '$dfile:$ln:$column' " .
+			      ", $stmt , $discr )");
+
+		push(@{$sequence->{$addr}},
+		     [$dfile, $ln, $column, $stmt, $discr]);
+
 		$discr = 0;
 		next;
 	    }
 
 	    if ($inst =~ m|^Copy(?: \(view \d+\))?$|) {
-		push(@{$sequence->{$addr}}, [$dfile, $ln, $column, $stmt, $discr]);
+		$self->_debug("Sequence [$addr] += ( '$dfile:$ln:$column' " .
+			      ", $stmt , $discr )");
+
+		push(@{$sequence->{$addr}},
+		     [$dfile, $ln, $column, $stmt, $discr]);
+
 		$discr = 0;
 		next;
 	    }
@@ -481,8 +564,15 @@ sub _parse_lines
 	    }
 
 	    if ($inst =~ m|^Extended opcode \d+: End of Sequence$|) {
-		push(@{$sequence->{$addr}}, [$dfile, $ln, $column, $stmt, $discr]);
+		$self->_debug("Sequence [$addr] += ( '$dfile:$ln:$column' " .
+			      ", $stmt , $discr )");
+
+		push(@{$sequence->{$addr}},
+		     [$dfile, $ln, $column, $stmt, $discr]);
 		push(@$table, $sequence);
+
+		$self->_debug("Start new sequence");
+
 		$sequence = {};
 		$dfile = $ftable->{1};
 		$addr = 0;
@@ -492,16 +582,19 @@ sub _parse_lines
 		next;
 	    }
 
+	    $self->_debug("Unknown instruction : '$inst'");
 	    printf(STDERR "Unknown instruction: %s\n", $inst);
 	    next;
 	}
 
-	if ($line =~ m|^\s+(\d+)\s+(\d+)(?:\s+\d+){2}\s+(.*)$|) {
+	if ($line =~ m|^\s+(\d+)\s+(\d+)\s+\(.*\):\s+(.*)$|) {
 	    ($findex, $dindex, $file) = ($1, $2, $3);
 
 	    if ($dindex != 0) {
 		$file = $dtable->{$dindex} . '/' . $file;
 	    }
+
+	    $self->_debug("File table [$findex] = '$file'");
 
 	    $ftable->{$findex} = $file;
 
@@ -512,8 +605,11 @@ sub _parse_lines
 	    next;
 	}
 
-	if ($line =~ m|^\s+(\d+)\s+(.*)$|) {
+	if ($line =~ m|^\s+(\d+)\s+\(.*\):\s+(.*)$|) {
 	    ($dindex, $dir) = ($1, $2);
+
+	    $self->_debug("Directory table [$dindex] = '$dir'");
+
 	    $dtable->{$dindex} = $dir;
 	    next;
 	}
@@ -531,7 +627,9 @@ sub _parse_lines
 	    next;
 	} elsif ($line =~ m|^\s+Line Number Statements:$|) {
 	    next;
-	} elsif ($line =~ m|^\s+Entry\s+Dir\s+Time\s+Size\s+Name$|) {
+	} elsif ($line =~ m|^\s+Entry\s+Name$|) {
+	    next;
+	} elsif ($line =~ m|^\s+Entry\s+Dir\s+Name$|) {
 	    next;
 	} elsif($line eq 'Raw dump of debug contents of section .debug_line:'){
 	    next;
@@ -543,6 +641,7 @@ sub _parse_lines
 	    next;
 	}
 
+	$self->_debug("Unknown line : '$line'");
 	printf(STDERR "Unknown line: %s\n", $line);
     }
 
@@ -552,6 +651,7 @@ sub _parse_lines
 
     $self->_update_info($ftable);
 
+    $self->_debug_exit();
     return $self;
 }
 
@@ -578,6 +678,10 @@ sub _update_info
     foreach $name (keys(%$info)) {
 	$findex = $info->{$name}->[0];
 	$file = $ftable->{$findex};
+
+	$self->_debug("Update debug info: '$name' => [ '$file' , " .
+		      $info->{$name}->[1] . " ]");
+
 	$info->{$name}->[0] = $file;
     }
 }

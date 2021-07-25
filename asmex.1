@@ -1,5 +1,5 @@
 '\" t
-.TH ASMEX 1 "Version 1.0.0"
+.TH ASMEX 1 "Version 1.1.0"
 .SH NAME
 asmex \- show assembly and source code correspondance
 .SH SYNOPSIS
@@ -7,7 +7,7 @@ asmex \- show assembly and source code correspondance
 .br
 .B "asmex \-\-version"
 .br
-.B "asmex [\-I\fIpath\fP...] \fIfile\fP"
+.B "asmex [-d \fIpath\fP] [\-I\fIpath\fP...] \fIfile\fP"
 .br
 .SH DESCRIPTION
 Show the assembly code of the binary
@@ -69,6 +69,9 @@ Go to the next search result.
 \fBN\fR
 Go to the previous search result.
 .SH OPTIONS
+.TP
+\fB\-d\fR \fIpath\fR, \fB\-\-debug\fR=\fIpath\fR
+Write debug information in \fIpath\fR.
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print the usage message and exit.
