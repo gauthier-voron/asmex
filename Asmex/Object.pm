@@ -174,7 +174,11 @@ sub _parse_code
     my (@sections, $code);
     my @command = ('objdump', '-dCr', $path);
 
+    $self->_debug("Parse code: " . join(' ', map { "'$_'" } @command));
+    $self->_debug_enter();
+
     if (!open($fh, '-|', @command)) {
+	$self->_debug_exit();
 	return undef;
     }
 
@@ -184,7 +188,12 @@ sub _parse_code
 	if ($line =~ m|^\s*([0-9a-f]+):\s+([0-9a-f]{2}(?: [0-9a-f]{2})*)(?:\s+(.*\S))?\s*$|) {
 	    ($addr, $bin, $asm) = ($1, $2, $3);
 	    $addr = hex('0x' . $addr);
+
+	    $self->_debug(sprintf("Code [%s] [%s] += %8x: %-16s %s",
+			  $section, $entry, $addr, $bin, $asm));
+
 	    push(@{$code->{$section}->{$entry}}, [ $addr, $bin, $asm ]);
+
 	    next;
 	}
 
@@ -216,6 +225,7 @@ sub _parse_code
 	    next;
 	}
 
+	$self->_debug("Unknown line : '$line'");
 	printf(STDERR "Unknown line: %s\n", $line);
     }
 
@@ -224,6 +234,7 @@ sub _parse_code
     $self->{_sections} = \@sections;
     $self->{_code} = $code;
 
+    $self->_debug_exit();
     return $self;
 }
 
