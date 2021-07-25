@@ -907,6 +907,8 @@ each assembly lines in the source files.
 
 Options:
 
+  -d, --debug <path>          Write debug information in <path>.
+
   -h, --help                  Show this message and exit.
 
   -I, --include <path>        Find source code files at the given <path>. The
