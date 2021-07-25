@@ -267,9 +267,17 @@ sub build_color_table
 sub build_data
 {
     my ($object, $includes) = @_;
-    my ($asmobj, $asm_code, $source_codes, $color_table);
+    my ($asmobj, $include, $asm_code, $source_codes, $color_table);
+
+    debug("Build data for '$object'");
 
     $asmobj = Asmex::Object->new($object);
+
+    debug("Reconstruct ASM code from ". scalar(@$includes) ." include roots");
+
+    foreach $include (@$includes) {
+	debug("  use include root '$include'");
+    }
 
     $asm_code = build_asm_code($asmobj, $includes);
     $source_codes = build_source_codes($asm_code);
