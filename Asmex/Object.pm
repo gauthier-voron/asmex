@@ -114,6 +114,9 @@ sub _parse
     my ($self, $path) = @_;
     my $ret;
 
+    $self->_debug("Parse '$path'");
+    $self->_debug_enter();
+
     $ret = $self->_parse_code($path);
     if (!defined($ret)) {
 	return undef;
@@ -141,6 +144,7 @@ sub _parse
 
     $self->_match_sections();
 
+    $self->_debug_exit();
     return $self;
 }
 
