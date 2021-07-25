@@ -678,6 +678,10 @@ sub _update_info
     foreach $name (keys(%$info)) {
 	$findex = $info->{$name}->[0];
 	$file = $ftable->{$findex};
+
+	$self->_debug("Update debug info: '$name' => [ '$file' , " .
+		      $info->{$name}->[1] . " ]");
+
 	$info->{$name}->[0] = $file;
     }
 }
