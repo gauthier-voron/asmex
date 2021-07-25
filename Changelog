@@ -1,0 +1,9 @@
+2021-07-25  Gauthier Voron  <gauthier.voron@mnesic.fr>
+
+	* asmex: add a debug flag and implement debug messages to a specified
+	file to trace parsing and path resolution
+
+	* Asmex/Object.pm: add a debug optional parameter to enable debug
+	messages to a specified filehandle
+
+	* asmex.1: update documentation about debug flag
