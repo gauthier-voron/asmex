@@ -49,11 +49,62 @@ our @EXPORT = (
 
 sub new
 {
-    my ($class, $path) = @_;
+    my ($class, $path, %opts) = @_;
     my $self = bless({}, $class);
+    my $value;
+
+    if (defined($value = $opts{DEBUG})) {
+	if (ref($value) eq 'GLOB') {
+	    $self->{_debug} = $value;
+	} else {
+	    return undef;
+	}
+	$self->{_debug_indent} = 0;
+    }
 
     return $self->_parse($path)
 }
+
+
+sub _debug
+{
+    my ($self, $msg) = @_;
+    my ($fh, $indent);
+
+    $fh = $self->{_debug};
+    $indent = $self->{_debug_indent};
+
+    if (!defined($fh)) {
+	return;
+    }
+
+    printf($fh "[%s] %s%s\n", __PACKAGE__, '  ' x $indent, $msg);
+}
+
+sub _debug_enter
+{
+    my ($self) = @_;
+    my ($indent);
+
+    $indent = $self->{_debug_indent};
+
+    if (defined($indent)) {
+	$self->{_debug_indent} += 1;
+    }
+}
+
+sub _debug_exit
+{
+    my ($self) = @_;
+    my ($indent);
+
+    $indent = $self->{_debug_indent};
+
+    if (defined($indent)) {
+	$self->{_debug_indent} -= 1;
+    }
+}
+
 
 # Parse the file with the given $path (assumed to include DWARF information)
 # and extract the debug data.
