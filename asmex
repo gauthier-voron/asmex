@@ -285,7 +285,7 @@ sub build_data
 
     debug("Build data for '$object'");
 
-    $asmobj = Asmex::Object->new($object);
+    $asmobj = Asmex::Object->new($object, DEBUG => $DEBUG);
 
     debug("Reconstruct ASM code from ". scalar(@$includes) ." include roots");
 
