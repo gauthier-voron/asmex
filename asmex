@@ -119,7 +119,11 @@ sub build_asm_code
 
     $compdir = $asmobj->compdir();
 
+    debug("Found compilation directory '$compdir'");
+
     foreach $section (sort { $a cmp $b } @{$asmobj->sections()}) {
+	debug("Found compiled section '$section'");
+
 	if (defined($lines)) {
 	    push(@$lines, { TYPE => '', ADDR => '', TEXT => '',
 			    DLINE => undef });
@@ -138,6 +142,8 @@ sub build_asm_code
 			  $codes{$b}->[0]->[CODE_ADDR] } @entries;
 
 	foreach $entry (@entries) {
+	    debug("  found compiled entry '$entry'");
+
 	    push(@$lines, { TYPE => '', ADDR => '', TEXT => '',
 			    DLINE => undef });
 	    push(@$lines, { TYPE => 'entry', ADDR => '', TEXT => $entry . ':',
@@ -155,6 +161,14 @@ sub build_asm_code
 
 		if (defined($dlines)) {
 		    $dline = build_dline($compdir, $dlines, $includes);
+		    if (defined($dline)) {
+			debug(sprintf("    %-30s -> %s", $asm,
+				      join(':', @$dline)));
+		    } else {
+			debug(sprintf("    %-30s -> unknown location", $asm));
+		    }
+		} else {
+		    debug(sprintf("    %-30s -> (nil)", $asm));
 		}
 
 		push(@$lines, { TYPE => 'instr', ADDR => $line->[CODE_ADDR],
